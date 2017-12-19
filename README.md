@@ -1,143 +1,170 @@
-package com.citi.db.integration.core;
+package com.citi.db.integration.memory.test;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.util.Assert;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 
-import com.citi.db.integration.exception.IntegrationErrorCodes;
+import com.citi.db.integration.core.IntegrationChannel;
+import com.citi.db.integration.core.IntegrationChannelManager;
 import com.citi.db.integration.exception.IntegrationException;
+import com.citi.db.integration.memory.MemoryBlockingIntegrationChannel;
 
-/**
- * @author dk99444
- *
- */
-public class IntegrationChannelManager {
-	private static final Logger _LOG = LoggerFactory.getLogger(IntegrationChannelManager.class);
+@RunWith(SpringJUnit4ClassRunner.class)
+//@ContextConfiguration(locations = { "/com/citi/ual/framework/conf/virtualization-spring-config.xml" })
+public class TestMemoryBlockingIntergationChannel {
 
-	private static final IntegrationChannelManager SELF_INSTANCE;
-	private static final Map<String, IntegrationChannel<?>> channelStore;
-	private static final ThreadLocal<Map<String, IntegrationChannel<?>>> threadLocalChannels = new ThreadLocal<Map<String, IntegrationChannel<?>>>() {
-		@Override
-		protected Map<String, IntegrationChannel<?>> initialValue() {
-			return new HashMap<String, IntegrationChannel<?>>();
-		}
-	};
+	@Test
+	public void testChannel() throws IntegrationException, InterruptedException, ExecutionException {
 
-	static {
-		// Creating the static self-instance object
-		SELF_INSTANCE = new IntegrationChannelManager();
+		final String channelName = "Queue#1";
+		final String poisonPill = "STOP";
 
-		channelStore = new HashMap<String, IntegrationChannel<?>>();
-	}
+		IntegrationChannelManager.getInstance().registerChannel(new MemoryBlockingIntegrationChannel<String>(channelName, 2, poisonPill));
 
-	/**
-	 * Private constructor to make this a singleton class 
-	 */
-	private IntegrationChannelManager() {
-		_LOG.debug("Creating IntegrationChannelManager instance.");
-	}
+		final List<Callable<String>> workerTasks = new ArrayList<>();
+		final List<StringBuffer> resultTexts = new ArrayList<>();
 
-	/**
-	 * getInstance method for getting the singleton instance of IntegrationChannelManager
-	 * @return
-	 */
-	public static IntegrationChannelManager getInstance() {
-		_LOG.debug("Entering getInstance() method of IntegrationChannelManager.");
-		return SELF_INSTANCE;
-	}
+		// Producer Thread
+		final StringBuffer resBuffProducer = new StringBuffer();
+		resultTexts.add(resBuffProducer);
+		workerTasks.add(new Callable<String>() {
+			@SuppressWarnings("unchecked")
+			@Override
+			public String call() {
+				try {
+					List<String> itemList = new ArrayList<>();
+					itemList.add("First Item");
+					itemList.add("Second Item");
+					itemList.add("Third Item");
+					itemList.add("Fourth Item");
+					itemList.add("Fifth Item");
 
-	/**
-	 * API to register a new channel with the integration channel manager.
-	 * 
-	 * @param channel
-	 * @return
-	 * @throws IntegrationException
-	 */
-	public IntegrationChannel<?> registerChannel(final IntegrationChannel<?> channel) throws IntegrationException {
-		try {
-			Assert.notNull(channel, "No channel sent for registering.");
+					Thread.sleep(2000);
 
-			if (null != channelStore.get(channel.getName())) {
-				throw new IntegrationException(IntegrationErrorCodes.CHANNEL_ALREADY_EXIST);
-			}
+					IntegrationChannel<String> channel = (IntegrationChannel<String>) IntegrationChannelManager.getInstance().getChannel(channelName);
+					int idx = 0;
+					while (idx < itemList.size()) {
+						System.out.println("Before Send on '" + channel.getName() + "' item: " + itemList.get(idx));
+						channel.write(itemList.get(idx));
+						System.out.println("After Send on '" + channel.getName() + "' item: " + itemList.get(idx));
+						idx++;
 
-			channel.setChannelCloseCallback(new IntegrationChannelCallback() {
-				@Override
-				public void afterClose() {
-					removeChannel(channel.getName());
-					try {
-						_LOG.debug("channelStore after removing [{}]: {}", channel.getName(), channelStore);
-					} catch (Exception e) {
-						// Ignore error in case some exception thrown while logging. For e.g., ConcurrentModificationException on channelStore.
-						_LOG.debug("channelStore after removing [{}], size: {}", channel.getName(), channelStore.size());
+						// Simulating processing delay
+						// Thread.sleep(100);
+
+						// Simulating failure
+						//						if (idx == 4) {
+						//							throw new InterruptedException("Simulated producer failure.");
+						//						}
 					}
+					channel.markForClosure();
+					resBuffProducer.append("SUCCESS: producer done.");
+					return "SUCCESS: producer done.";
+				} catch (Exception e) {
+					resBuffProducer.append("ERROR: (Producer) :" + e.getMessage());
+					System.out.println("resBuffProducer:" + resBuffProducer);
+					System.err.println(e.getMessage());
+					//e.printStackTrace();
+					return resBuffProducer.toString();
 				}
-			});
+			}
+		});
 
-			// Add to the channel store
-			channelStore.put(channel.getName(), channel);
-			threadLocalChannels.get().put(channel.getName(), channel);
+		// Consumer Thread
+		final StringBuffer resBuffConsumer = new StringBuffer();
+		resultTexts.add(resBuffConsumer);
+		workerTasks.add(new Callable<String>() {
+			@SuppressWarnings("unchecked")
+			@Override
+			public String call() throws Exception {
+				try {
+					IntegrationChannel<String> channel = (IntegrationChannel<String>) IntegrationChannelManager.getInstance().getChannel(channelName);
+					boolean channelOpen = true;
+					int idx = 0;
+					while (channelOpen) {
+						final String item = channel.read();
+						System.out.println("Received on '" + channel.getName() + "': " + item);
 
+						if (poisonPill.equalsIgnoreCase(item)) {
+							channelOpen = false;
+						}
+
+						idx++;
+
+						// Simulating processing delay
+						//Thread.sleep(1000);
+
+						// Simulating failure
+//						if (idx == 1) {
+//							throw new InterruptedException("Simulated consumer failure.");
+//						}
+					}
+					System.out.println("Channel closed : " + channel.isClosed());
+					resBuffConsumer.append("SUCCESS: consumer done.");
+					return "SUCCESS: consumer done.";
+				} catch (Exception e) {
+					resBuffConsumer.append("ERROR: (Consumer) :" + e.getMessage());
+					System.out.println("resBuffConsumer:" + resBuffConsumer);
+					System.err.println(e.getMessage());
+					//e.printStackTrace();
+					return resBuffConsumer.toString();
+				}
+
+			}
+		});
+
+		// Run all the steps asynchronously
+		final ExecutorService executor = Executors.newFixedThreadPool(5);
+		final CompletionService<String> completionService = new ExecutorCompletionService<String>(executor);
+
+		//		final List<Future<String>> results = executor.invokeAll(workerTasks);
+		final List<Future<String>> results = new ArrayList<Future<String>>(); //executor.invokeAll(workerTasks);
+		for (int i = 0; i < workerTasks.size(); i++) {
+			results.add(completionService.submit(workerTasks.get(i)));
+		}
+
+		for (int i = 0; i < results.size(); i++) {
 			try {
-				_LOG.debug("channelStore after registering [{}]: {}", channel.getName(), channelStore);
-			} catch (Exception e) {
-				// Ignore error in case some exception thrown while logging. For e.g., ConcurrentModificationException on channelStore.
-				_LOG.debug("channelStore after registering [{}], size: {}", channel.getName(), channelStore.size());
+				System.out.println("wait for result**:");
+				Future<String> result = completionService.take();
+				System.out.println("result**:" + result);
+				System.out.println("result****:" + result.get());
+
+				if (result.get().startsWith("ERROR")) {
+					System.out.println("Cancelling all tasks.");
+					executor.shutdownNow();
+					//					for (Future<String> future : results) {
+					//						if (!future.isDone()) {
+					//							System.out.println("Cancelling " + future);
+					//							future.cancel(true);
+					//						}
+					//					}
+				}
+			} catch (InterruptedException e) {
+				System.out.println("InterruptedException ::" + e);
+			} catch (ExecutionException e) {
+				System.out.println("ExecutionException ::" + e);
+
 			}
-
-			return channel;
-		} catch (IntegrationException e) {
-			throw e;
-		} catch (Exception e) {
-			throw new IntegrationException(IntegrationErrorCodes.UNKNOWN_EXCEPTION, e);
 		}
-	}
 
-	/**
-	 * API to get an already registered channel from the integration channel manager.
-	 * 
-	 * @param channelName
-	 * @return
-	 * @throws IntegrationException
-	 */
-	public IntegrationChannel<?> getChannel(String channelName) throws IntegrationException {
-		try {
-			_LOG.debug("Requesting for channel: {}", channelName);
-			// Find the channel
-			final IntegrationChannel<?> channel = channelStore.get(channelName);
-			_LOG.debug("Channel found for [{}]: {}", channelName, channel);
-
-			if (null == channel) {
-				throw new IntegrationException(IntegrationErrorCodes.CHANNEL_NOT_FOUND, "Channel'" + channelName + "'");
-			}
-
-			return channel;
-		} catch (IntegrationException e) {
-			throw e;
-		} catch (Exception e) {
-			throw new IntegrationException(IntegrationErrorCodes.UNKNOWN_EXCEPTION, e);
+		//final result
+		System.out.println("** FINAL RESULT **");
+		for (StringBuffer sb : resultTexts) {
+			System.out.println("Final ***** result: " + sb.toString());
 		}
-	}
 
-	/**
-	 * API to clear channels created in the current thread
-	 */
-	public void clearThreadLocalChannels() {
-		for (String channelName : threadLocalChannels.get().keySet()) {
-			removeChannel(channelName);
-		}
-		threadLocalChannels.get().clear();
-	}
-
-	/**
-	 * Remove the channel from store.
-	 * 
-	 * @param channelName
-	 */
-	void removeChannel(String channelName) {
-		channelStore.remove(channelName);
+		System.out.println("Executor Shutdown.");
+		executor.shutdown();
 	}
 }
