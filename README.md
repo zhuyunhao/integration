@@ -1,72 +1,44 @@
 package com.citi.db.integration.exception;
 
-import org.apache.commons.lang.exception.NestableException;
+public enum IntegrationErrorCodes {
 
-/**
- * Exception class for Integration framework exceptions
- *
- */
-public class IntegrationException extends NestableException {
-	private static final long serialVersionUID = -8412921900443675338L;
+	//GENERAL
+	NO_SPACE("No Space Available in the Channel."),//
+	READ_TIMEOUT("Timedout waiting for data. Timeout millis: '#1#'"),//
+	
+	// Channel Factory Error Codes
+	CHANNEL_ALREADY_EXIST("Requested channel already exist, can not create new."),
 
-	private IntegrationErrorCodes errCode = null;
+	CHANNEL_NOT_FOUND("Requested Channel not found."),
 
-	/**
-	 * @return the errCode
-	 */
-	public IntegrationErrorCodes getVirtualizationErrorCode() {
-		return errCode;
+	// Channel Implementation error codes
+	READ_FAILURE("Unable to read from the channel."),
+
+	WRITE_FAILURE("Unable to write to the channel."),
+
+	UNKNOWN_EXCEPTION("Unknown System Error");
+
+	private String message;
+
+	IntegrationErrorCodes(String message) {
+		this.message = message;
 	}
 
-	/**
-	 * @param errCode
-	 * @param errMessage
-	 */
-	public IntegrationException(IntegrationErrorCodes errCode) {
-		super(errCode.getMessage());
-		this.errCode = errCode;
-	}
-
-	/**
-	 * @param errCode
-	 * @param ex
-	 */
-	public IntegrationException(IntegrationErrorCodes errCode, Throwable ex) {
-		super(errCode.getMessage(), ex);
-		this.errCode = errCode;
-	}
-
-	/**
-	 * @param errCode
-	 * @param errMessage
-	 */
-	public IntegrationException(IntegrationErrorCodes errCode, String... errMessage) {
-		super(errCode.getMessage(errMessage));
-		this.errCode = errCode;
-	}
-
-	/**
-	 * @param errCode
-	 * @param errMessage
-	 * @param ex
-	 */
-	public IntegrationException(IntegrationErrorCodes errCode, String errMessage, Throwable ex) {
-		super(errCode.getMessage() + " " + errMessage, ex);
-		this.errCode = errCode;
-	}
-
-	public boolean hasErrorCode(final IntegrationErrorCodes errCode) {
-		// Check if the Error Code is present in this instance of Error
-		if (errCode.equals(this.errCode)) {
-			return true;
+	public String getMessage(String... params) {
+		int cnt = 1;
+		String msg = this.message;
+		if (params != null && params.length > 0) {
+			for (String par : params) {
+				msg = msg.replaceAll("#" + cnt + "#", par);
+				cnt++;
+			}
 		}
-
-		// Check if the Error Code is present in parent instance of Error
-		Throwable parentEx = getCause();
-		if (parentEx instanceof IntegrationException) {
-			return ((IntegrationException) parentEx).hasErrorCode(errCode);
-		}
-
-		return false;
+		this.message = msg;
+		return msg;
 	}
+
+	public String getCode() {
+		return name();
+	}
+
 }
