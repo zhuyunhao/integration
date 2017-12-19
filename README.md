@@ -1,44 +1,70 @@
-package com.citi.db.integration.exception;
+package com.citi.db.integration.memory;
 
-public enum IntegrationErrorCodes {
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 
-	//GENERAL
-	NO_SPACE("No Space Available in the Channel."),//
-	READ_TIMEOUT("Timedout waiting for data. Timeout millis: '#1#'"),//
-	
-	// Channel Factory Error Codes
-	CHANNEL_ALREADY_EXIST("Requested channel already exist, can not create new."),
+import com.citi.db.integration.core.AbstractBlockingIntegrationChannel;
+import com.citi.db.integration.exception.IntegrationErrorCodes;
+import com.citi.db.integration.exception.IntegrationException;
 
-	CHANNEL_NOT_FOUND("Requested Channel not found."),
+/**
+ * @author dk99444
+ *
+ */
+public class MemoryBlockingIntegrationChannel<I> extends AbstractBlockingIntegrationChannel<I> {
+	//	private static final Logger _LOG = LoggerFactory.getLogger(MemoryIntegrationChannel.class);
 
-	// Channel Implementation error codes
-	READ_FAILURE("Unable to read from the channel."),
+	// The queue store
+	private BlockingQueue<I> queue = null;
 
-	WRITE_FAILURE("Unable to write to the channel."),
+	public MemoryBlockingIntegrationChannel(String channelName, int capacity, I poisonPill) {
+		super(channelName, capacity, poisonPill);
 
-	UNKNOWN_EXCEPTION("Unknown System Error");
-
-	private String message;
-
-	IntegrationErrorCodes(String message) {
-		this.message = message;
+		queue = new ArrayBlockingQueue<I>(capacity, true);
 	}
 
-	public String getMessage(String... params) {
-		int cnt = 1;
-		String msg = this.message;
-		if (params != null && params.length > 0) {
-			for (String par : params) {
-				msg = msg.replaceAll("#" + cnt + "#", par);
-				cnt++;
-			}
+	@Override
+	protected void doWrite(I item) throws IntegrationException {
+		try {
+			queue.put(item);
+		} catch (InterruptedException e) {
+			throw new IntegrationException(IntegrationErrorCodes.WRITE_FAILURE, e);
 		}
-		this.message = msg;
-		return msg;
+
 	}
 
-	public String getCode() {
-		return name();
+	@Override
+	protected I doRead() throws IntegrationException {
+		try {
+			return queue.take();
+		} catch (InterruptedException e) {
+			throw new IntegrationException(IntegrationErrorCodes.READ_FAILURE, e);
+		}
+	}
+
+	@Override
+	protected I doRead(long timeoutMillis) throws IntegrationException {
+		try {
+			return queue.poll(timeoutMillis, TimeUnit.MILLISECONDS);
+		} catch (InterruptedException e) {
+			throw new IntegrationException(IntegrationErrorCodes.READ_FAILURE, e);
+		}
+	}
+
+	@Override
+	protected boolean isEmpty() throws IntegrationException {
+		return queue.isEmpty();
+	}
+
+	@Override
+	protected void doMarkForClosure() throws IntegrationException {
+		//No-Op
+	}
+
+	@Override
+	protected long getCurrentSize() throws IntegrationException {
+		return queue.size();
 	}
 
 }
