@@ -1,10 +1,12 @@
-package com.citi.db.integration.memory;
+package com.citi.db.integration.core;
 
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.TimeUnit;
+import java.util.HashMap;
+import java.util.Map;
 
-import com.citi.db.integration.core.AbstractBlockingIntegrationChannel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.util.Assert;
+
 import com.citi.db.integration.exception.IntegrationErrorCodes;
 import com.citi.db.integration.exception.IntegrationException;
 
@@ -12,59 +14,130 @@ import com.citi.db.integration.exception.IntegrationException;
  * @author dk99444
  *
  */
-public class MemoryBlockingIntegrationChannel<I> extends AbstractBlockingIntegrationChannel<I> {
-	//	private static final Logger _LOG = LoggerFactory.getLogger(MemoryIntegrationChannel.class);
+public class IntegrationChannelManager {
+	private static final Logger _LOG = LoggerFactory.getLogger(IntegrationChannelManager.class);
 
-	// The queue store
-	private BlockingQueue<I> queue = null;
-
-	public MemoryBlockingIntegrationChannel(String channelName, int capacity, I poisonPill) {
-		super(channelName, capacity, poisonPill);
-
-		queue = new ArrayBlockingQueue<I>(capacity, true);
-	}
-
-	@Override
-	protected void doWrite(I item) throws IntegrationException {
-		try {
-			queue.put(item);
-		} catch (InterruptedException e) {
-			throw new IntegrationException(IntegrationErrorCodes.WRITE_FAILURE, e);
+	private static final IntegrationChannelManager SELF_INSTANCE;
+	private static final Map<String, IntegrationChannel<?>> channelStore;
+	private static final ThreadLocal<Map<String, IntegrationChannel<?>>> threadLocalChannels = new ThreadLocal<Map<String, IntegrationChannel<?>>>() {
+		@Override
+		protected Map<String, IntegrationChannel<?>> initialValue() {
+			return new HashMap<String, IntegrationChannel<?>>();
 		}
+	};
 
+	static {
+		// Creating the static self-instance object
+		SELF_INSTANCE = new IntegrationChannelManager();
+
+		channelStore = new HashMap<String, IntegrationChannel<?>>();
 	}
 
-	@Override
-	protected I doRead() throws IntegrationException {
+	/**
+	 * Private constructor to make this a singleton class 
+	 */
+	private IntegrationChannelManager() {
+		_LOG.debug("Creating IntegrationChannelManager instance.");
+	}
+
+	/**
+	 * getInstance method for getting the singleton instance of IntegrationChannelManager
+	 * @return
+	 */
+	public static IntegrationChannelManager getInstance() {
+		_LOG.debug("Entering getInstance() method of IntegrationChannelManager.");
+		return SELF_INSTANCE;
+	}
+
+	/**
+	 * API to register a new channel with the integration channel manager.
+	 * 
+	 * @param channel
+	 * @return
+	 * @throws IntegrationException
+	 */
+	public IntegrationChannel<?> registerChannel(final IntegrationChannel<?> channel) throws IntegrationException {
 		try {
-			return queue.take();
-		} catch (InterruptedException e) {
-			throw new IntegrationException(IntegrationErrorCodes.READ_FAILURE, e);
+			Assert.notNull(channel, "No channel sent for registering.");
+
+			if (null != channelStore.get(channel.getName())) {
+				throw new IntegrationException(IntegrationErrorCodes.CHANNEL_ALREADY_EXIST);
+			}
+
+			channel.setChannelCloseCallback(new IntegrationChannelCallback() {
+				@Override
+				public void afterClose() {
+					removeChannel(channel.getName());
+					try {
+						_LOG.debug("channelStore after removing [{}]: {}", channel.getName(), channelStore);
+					} catch (Exception e) {
+						// Ignore error in case some exception thrown while logging. For e.g., ConcurrentModificationException on channelStore.
+						_LOG.debug("channelStore after removing [{}], size: {}", channel.getName(), channelStore.size());
+					}
+				}
+			});
+
+			// Add to the channel store
+			channelStore.put(channel.getName(), channel);
+			threadLocalChannels.get().put(channel.getName(), channel);
+
+			try {
+				_LOG.debug("channelStore after registering [{}]: {}", channel.getName(), channelStore);
+			} catch (Exception e) {
+				// Ignore error in case some exception thrown while logging. For e.g., ConcurrentModificationException on channelStore.
+				_LOG.debug("channelStore after registering [{}], size: {}", channel.getName(), channelStore.size());
+			}
+
+			return channel;
+		} catch (IntegrationException e) {
+			throw e;
+		} catch (Exception e) {
+			throw new IntegrationException(IntegrationErrorCodes.UNKNOWN_EXCEPTION, e);
 		}
 	}
 
-	@Override
-	protected I doRead(long timeoutMillis) throws IntegrationException {
+	/**
+	 * API to get an already registered channel from the integration channel manager.
+	 * 
+	 * @param channelName
+	 * @return
+	 * @throws IntegrationException
+	 */
+	public IntegrationChannel<?> getChannel(String channelName) throws IntegrationException {
 		try {
-			return queue.poll(timeoutMillis, TimeUnit.MILLISECONDS);
-		} catch (InterruptedException e) {
-			throw new IntegrationException(IntegrationErrorCodes.READ_FAILURE, e);
+			_LOG.debug("Requesting for channel: {}", channelName);
+			// Find the channel
+			final IntegrationChannel<?> channel = channelStore.get(channelName);
+			_LOG.debug("Channel found for [{}]: {}", channelName, channel);
+
+			if (null == channel) {
+				throw new IntegrationException(IntegrationErrorCodes.CHANNEL_NOT_FOUND, "Channel'" + channelName + "'");
+			}
+
+			return channel;
+		} catch (IntegrationException e) {
+			throw e;
+		} catch (Exception e) {
+			throw new IntegrationException(IntegrationErrorCodes.UNKNOWN_EXCEPTION, e);
 		}
 	}
 
-	@Override
-	protected boolean isEmpty() throws IntegrationException {
-		return queue.isEmpty();
+	/**
+	 * API to clear channels created in the current thread
+	 */
+	public void clearThreadLocalChannels() {
+		for (String channelName : threadLocalChannels.get().keySet()) {
+			removeChannel(channelName);
+		}
+		threadLocalChannels.get().clear();
 	}
 
-	@Override
-	protected void doMarkForClosure() throws IntegrationException {
-		//No-Op
+	/**
+	 * Remove the channel from store.
+	 * 
+	 * @param channelName
+	 */
+	void removeChannel(String channelName) {
+		channelStore.remove(channelName);
 	}
-
-	@Override
-	protected long getCurrentSize() throws IntegrationException {
-		return queue.size();
-	}
-
 }
